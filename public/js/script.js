@@ -1,3 +1,4 @@
+
 const socket = io();
 
 const roomInput = document.getElementById('roomInput');
@@ -16,53 +17,67 @@ let localStream = null;
 let peerConnection = null;
 let remoteSocketId = null;
 let isMuted = false;
+let pendingCandidates = [];
+let isLeaving = false;
 
 const rtcConfig = {
     iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
-    ]
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+    ],
+    iceCandidatePoolSize: 10
 };
 
 async function startCall(roomId) {
-    if (currentRoom) return;
+    if (currentRoom || localStream) return;
 
     try {
         message.textContent = 'Requesting microphone access...';
 
         localStream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
             video: false
         });
 
         currentRoom = roomId;
         roomCodeDisplay.textContent = roomId;
         callArea.classList.add('active');
-        callStatus.textContent = 'Waiting for someone to join...';
+        callStatus.textContent = 'Joining room...';
         message.textContent = '';
 
         muteBtn.disabled = false;
         hangupBtn.disabled = false;
-        muteBtn.textContent = '🎙️ Mute';
 
         socket.emit('join-room', roomId);
+
     } catch (error) {
-        console.error(error);
-        message.textContent = 'Microphone access failed. Check browser permissions.';
+        console.error('Microphone error:', error);
+        message.textContent = 'Microphone access failed. Check permissions.';
         stopCall(false);
     }
 }
 
 function createPeerConnection(targetId) {
-    remoteSocketId = targetId;
+    if (peerConnection) {
+        peerConnection.close();
+    }
 
-    peerConnection = new RTCPeerConnection(rtcConfig);
+    remoteSocketId = targetId;
+    pendingCandidates = [];
+
+    const pc = new RTCPeerConnection(rtcConfig);
+    peerConnection = pc;
 
     localStream.getTracks().forEach(track => {
-        peerConnection.addTrack(track, localStream);
+        pc.addTrack(track, localStream);
     });
 
-    peerConnection.onicecandidate = event => {
-        if (event.candidate) {
+    pc.onicecandidate = event => {
+        if (event.candidate && remoteSocketId === targetId) {
             socket.emit('ice-candidate', {
                 target: targetId,
                 candidate: event.candidate
@@ -70,34 +85,63 @@ function createPeerConnection(targetId) {
         }
     };
 
-    peerConnection.ontrack = event => {
+    pc.ontrack = event => {
         let audio = document.getElementById('remoteAudio');
 
         if (!audio) {
             audio = document.createElement('audio');
             audio.id = 'remoteAudio';
             audio.autoplay = true;
+            audio.playsInline = true;
             document.body.appendChild(audio);
         }
 
         audio.srcObject = event.streams[0];
-        audio.play().catch(console.error);
+
+        audio.play().catch(error => {
+            console.warn('Audio playback needs user interaction:', error);
+        });
     };
 
-    peerConnection.onconnectionstatechange = () => {
-        if (!peerConnection) return;
+    pc.oniceconnectionstatechange = () => {
+        if (peerConnection !== pc) return;
 
-        if (peerConnection.connectionState === 'connected') {
+        console.log('ICE state:', pc.iceConnectionState);
+
+        if (pc.iceConnectionState === 'checking') {
+            callStatus.textContent = 'Establishing voice connection...';
+        } else if (pc.iceConnectionState === 'connected' ||
+                   pc.iceConnectionState === 'completed') {
             callStatus.textContent = 'Connected! You are now talking.';
-        } else if (
-            peerConnection.connectionState === 'disconnected' ||
-            peerConnection.connectionState === 'failed'
-        ) {
-            callStatus.textContent = 'Connection lost. Try reconnecting.';
+        } else if (pc.iceConnectionState === 'failed') {
+            callStatus.textContent = 'Voice connection failed. A TURN relay may be needed.';
+        } else if (pc.iceConnectionState === 'disconnected') {
+            callStatus.textContent = 'Connection interrupted. Trying to recover...';
+        } else if (pc.iceConnectionState === 'closed') {
+            callStatus.textContent = 'Call ended.';
         }
     };
 
-    return peerConnection;
+    pc.onconnectionstatechange = () => {
+        console.log('Peer state:', pc.connectionState);
+    };
+
+    return pc;
+}
+
+async function flushPendingCandidates(pc) {
+    const candidates = [...pendingCandidates];
+    pendingCandidates = [];
+
+    for (const candidate of candidates) {
+        if (peerConnection !== pc) return;
+
+        try {
+            await pc.addIceCandidate(candidate);
+        } catch (error) {
+            console.error('Could not add queued ICE candidate:', error);
+        }
+    }
 }
 
 async function makeOffer(targetId) {
@@ -114,14 +158,16 @@ async function makeOffer(targetId) {
 
 socket.on('room-joined', async data => {
     if (data.peers.length > 0) {
-        callStatus.textContent = 'Connecting...';
+        callStatus.textContent = 'Connecting to the other person...';
 
         try {
             await makeOffer(data.peers[0]);
         } catch (error) {
-            console.error(error);
-            message.textContent = 'Could not start the connection.';
+            console.error('Offer error:', error);
+            message.textContent = 'Could not start the voice connection.';
         }
+    } else {
+        callStatus.textContent = 'Waiting for someone to join...';
     }
 });
 
@@ -134,6 +180,7 @@ socket.on('offer', async data => {
         const pc = createPeerConnection(data.sender);
 
         await pc.setRemoteDescription(data.offer);
+        await flushPendingCandidates(pc);
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
@@ -142,25 +189,36 @@ socket.on('offer', async data => {
             target: data.sender,
             answer: pc.localDescription
         });
+
     } catch (error) {
-        console.error(error);
+        console.error('Answer error:', error);
         message.textContent = 'Could not answer the call.';
     }
 });
 
 socket.on('answer', async data => {
-    if (peerConnection) {
+    if (!peerConnection) return;
+
+    try {
         await peerConnection.setRemoteDescription(data.answer);
+        await flushPendingCandidates(peerConnection);
+    } catch (error) {
+        console.error('Remote answer error:', error);
     }
 });
 
 socket.on('ice-candidate', async data => {
-    if (peerConnection && data.candidate) {
-        try {
-            await peerConnection.addIceCandidate(data.candidate);
-        } catch (error) {
-            console.error('ICE candidate error:', error);
-        }
+    if (!data.candidate) return;
+
+    if (!peerConnection || !peerConnection.remoteDescription) {
+        pendingCandidates.push(data.candidate);
+        return;
+    }
+
+    try {
+        await peerConnection.addIceCandidate(data.candidate);
+    } catch (error) {
+        console.error('ICE candidate error:', error);
     }
 });
 
@@ -174,6 +232,23 @@ socket.on('room-error', error => {
     stopCall(false);
 });
 
+socket.on('disconnect', () => {
+    if (currentRoom) {
+        callStatus.textContent = 'Server connection lost. Reconnecting...';
+    }
+});
+
+socket.on('connect', () => {
+    if (currentRoom && !isLeaving) {
+        callStatus.textContent = 'Server reconnected. Please rejoin the room.';
+    }
+});
+
+socket.on('connect_error', error => {
+    console.error('Socket connection error:', error);
+    message.textContent = 'Server connection error.';
+});
+
 function closePeerConnection() {
     if (peerConnection) {
         peerConnection.close();
@@ -181,12 +256,18 @@ function closePeerConnection() {
     }
 
     remoteSocketId = null;
+    pendingCandidates = [];
 
     const audio = document.getElementById('remoteAudio');
-    if (audio) audio.remove();
+    if (audio) {
+        audio.srcObject = null;
+        audio.remove();
+    }
 }
 
 function stopCall(notifyServer = true) {
+    isLeaving = true;
+
     if (notifyServer && currentRoom) {
         socket.emit('leave-room', currentRoom);
     }
@@ -206,6 +287,10 @@ function stopCall(notifyServer = true) {
     hangupBtn.disabled = true;
     muteBtn.textContent = '🎙️ Mute';
     callStatus.textContent = 'Call ended.';
+
+    setTimeout(() => {
+        isLeaving = false;
+    }, 500);
 }
 
 createBtn.addEventListener('click', () => {
@@ -230,7 +315,7 @@ copyBtn.addEventListener('click', async () => {
     try {
         await navigator.clipboard.writeText(currentRoom);
         copyBtn.textContent = 'Copied!';
-    } catch {
+    } catch (error) {
         message.textContent = 'Could not copy room code.';
     }
 });
@@ -249,8 +334,4 @@ muteBtn.addEventListener('click', () => {
 
 hangupBtn.addEventListener('click', () => {
     stopCall();
-});
-
-socket.on('connect_error', () => {
-    message.textContent = 'Server connection error. Please refresh.';
 });
