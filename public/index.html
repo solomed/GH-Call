@@ -1,0 +1,94 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#090d18">
+    <title>GH Call — Talk Anywhere</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+    <div class="background-glow glow-one"></div>
+    <div class="background-glow glow-two"></div>
+
+    <header>
+        <a class="logo" href="#">
+            <span class="logo-icon">GH</span>
+            <span>GH<span class="accent">Call</span></span>
+        </a>
+        <span class="online-status">
+            <span class="status-dot"></span> Ready to connect
+        </span>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="eyebrow">YOUR SPACE. YOUR VOICE.</div>
+            <h1>Distance means<br> <span>nothing.</span></h1>
+            <p>Connect with people anywhere. Just create a room, share the code, and start talking.</p>
+        </section>
+
+        <section class="call-card">
+            <div class="card-top">
+                <div>
+                    <span class="small-label">VOICE CONNECTION</span>
+                    <h2>Start a conversation</h2>
+                </div>
+                <div class="wave-icon">〰</div>
+            </div>
+
+            <label for="roomInput">ROOM CODE</label>
+            <input id="roomInput" type="text" placeholder="Enter a room code" maxlength="30">
+
+            <button id="joinBtn" class="primary-btn">
+                <span>Join a call</span>
+                <span>→</span>
+            </button>
+
+            <div class="separator"><span>OR</span></div>
+
+            <button id="createBtn" class="secondary-btn">
+                + Create a new room
+            </button>
+
+            <div id="callArea" class="call-area">
+                <div class="call-info">
+                    <span class="small-label">YOUR ROOM</span>
+                    <h3 id="roomCode">------</h3>
+                    <button id="copyBtn" class="copy-btn">Copy room code</button>
+                </div>
+
+                <div class="call-status" id="callStatus">
+                    Waiting for someone to join...
+                </div>
+
+                <div class="controls">
+                    <button id="muteBtn" class="control-btn" disabled>
+                        🎙️
+                        <span>Mute</span>
+                    </button>
+                    <button id="hangupBtn" class="control-btn hangup" disabled>
+                        ✕
+                        <span>Leave</span>
+                    </button>
+                </div>
+            </div>
+
+            <p id="message" class="message"></p>
+        </section>
+
+        <div class="features">
+            <div><span>🎙️</span> Clear voice</div>
+            <div><span>🔒</span> Private rooms</div>
+            <div><span>🌍</span> Anywhere</div>
+        </div>
+    </main>
+
+    <footer>GH Call © 2026 · Built with curiosity.</footer>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="js/script.js"></script>
+</body>
+</html>
